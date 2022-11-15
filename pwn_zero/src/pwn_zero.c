@@ -12,9 +12,6 @@
 #include "../include/constants.h"
 #include "../include/message_queue.h"
 
-#define LINES_ON_SCREEN 6
-#define COLUMNS_ON_SCREEN 21
-
 typedef struct PwnDumpModel PwnDumpModel;
 
 typedef struct {
@@ -208,8 +205,8 @@ static PwnZeroApp* pwn_zero_app_alloc() {
 
     // Enable uart listener
     furi_hal_console_disable();
-    furi_hal_uart_set_br(FuriHalUartIdUSART1, 115200);
-    furi_hal_uart_set_irq_cb(FuriHalUartIdUSART1, pwn_zero_on_irq_cb, app);
+    furi_hal_uart_set_br(PWNAGOTCHI_UART_CHANNEL, PWNAGOTCHI_UART_BAUD);
+    furi_hal_uart_set_irq_cb(PWNAGOTCHI_UART_CHANNEL, pwn_zero_on_irq_cb, app);
 
     app->worker_thread = furi_thread_alloc();
     furi_thread_set_name(app->worker_thread, "UsbUartWorker");
