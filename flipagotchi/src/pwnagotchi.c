@@ -211,52 +211,58 @@ void pwnagotchi_draw_mode(Pwnagotchi* pwn, Canvas* canvas) {
 }
 
 void pwnagotchi_draw_message(Pwnagotchi* pwn, Canvas* canvas) {
+    // [patched] rewritten: the original copied/passed a non-NUL-terminated buffer to
+    // canvas_draw_str for any long word without spaces (e.g. "lookinnnnn..."), so the
+    // canvas read past the allocation into heap memory -> garbled text / freeze.
+    // Also maxLines underflowed (17 - 54 < 0 -> huge size_t). Now bounded + safe.
     canvas_set_font(canvas, FontSecondary);
+
     int fontHeight = canvas_current_font_height(canvas);
+    if(fontHeight <= 0) fontHeight = 8;
+
     const char* message = furi_string_get_cstr(pwn->message);
+    size_t messageLen = strlen(message);
+    if(messageLen == 0) return;
 
-    // Apparently W is the widest character (USING a for a more average approach)
-    size_t charLength = canvas_string_width(canvas, "a");
+    int charLength = canvas_string_width(canvas, "a");
+    if(charLength <= 0) charLength = 1;
 
-    size_t horizSpace = FLIPPER_SCREEN_WIDTH - PWNAGOTCHI_MESSAGE_J;
-    size_t charSpaces = floor(((double)horizSpace) / charLength);
-    size_t messagePixLen = canvas_string_width(canvas, message);
+    size_t horizSpace = (size_t)FLIPPER_SCREEN_WIDTH - (size_t)PWNAGOTCHI_MESSAGE_J;
+    size_t charSpaces = horizSpace / (size_t)charLength;
+    if(charSpaces < 1) charSpaces = 1;
+    if(charSpaces > 62) charSpaces = 62;
+
+    // Vertical budget from the message row to the bottom of the screen (no underflow).
     size_t maxLines =
-        floor((PWNAGOTCHI_MESSAGE_I - PWNAGOTCHI_LINE2_END_I) / ((double)fontHeight));
+        ((size_t)FLIPPER_SCREEN_HEIGHT - (size_t)PWNAGOTCHI_MESSAGE_I) / (size_t)fontHeight;
+    if(maxLines < 1) maxLines = 1;
+    if(maxLines > 6) maxLines = 6;
 
-    size_t requiredLines = ceil(((double)messagePixLen) / horizSpace);
-
+    char line[64];
     size_t charIndex = 0;
-    for(size_t i = 0; i < requiredLines && i < maxLines - 1; i++) {
-        // Allocate the line with room for two more characters (a space and then another char)
-        size_t allocSize = charSpaces + 2;
-        char* line = malloc(sizeof(char) * allocSize);
+    for(size_t lineNo = 0; lineNo < maxLines && charIndex < messageLen; lineNo++) {
+        size_t remaining = messageLen - charIndex;
+        size_t take = remaining < charSpaces ? remaining : charSpaces;
 
-        // Copy the allotted characters into line
-        memcpy(line, (message + charIndex), allocSize);
-
-        // Now loop backwards and cut it off at a space if we end with a letter
-        size_t backspaceCount = 0;
-        if(line[allocSize - 1] != ' ' && line[allocSize - 1] != '\0') {
-            for(int j = allocSize - 1; j >= 0; j--) {
-                if(line[j] == ' ') {
-                    line[j] = '\0';
-                    break;
-                }
-                backspaceCount++;
-            }
+        // Avoid splitting a word: if we stopped mid-word, back up to the last space.
+        if(charIndex + take < messageLen && message[charIndex + take] != ' ') {
+            size_t back = take;
+            while(back > 1 && message[charIndex + back - 1] != ' ') back--;
+            if(back > 1 && message[charIndex + back - 1] == ' ') take = back - 1;
         }
+        if(take < 1) take = 1;
 
-        // Lets make sure if backspaceCount is too large that we cut the word instead of drawing off the screen
-        if(backspaceCount >= charSpaces) {
-            backspaceCount = 0;
-        }
+        memcpy(line, message + charIndex, take);
+        line[take] = '\0';
 
         canvas_draw_str(
-            canvas, PWNAGOTCHI_MESSAGE_J, PWNAGOTCHI_MESSAGE_I + (i * fontHeight), line);
+            canvas,
+            PWNAGOTCHI_MESSAGE_J,
+            PWNAGOTCHI_MESSAGE_I + (int)(lineNo * (size_t)fontHeight),
+            line);
 
-        charIndex += (charSpaces - backspaceCount + 1);
-        free(line);
+        charIndex += take;
+        while(charIndex < messageLen && message[charIndex] == ' ') charIndex++;
     }
 }
 

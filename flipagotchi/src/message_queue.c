@@ -24,44 +24,52 @@ void message_queue_free(MessageQueue* queue) {
 }
 
 bool message_queue_has_message(MessageQueue* queue) {
-    // Make sure readPtr is at the beginning of a message
-    if (*(queue->readPtr) != PWNAGOTCHI_PROTOCOL_START) {
+    // [patched] RESYNC — the real cause of the "screen freezes, needs restart" bug.
+    // The original returned false forever whenever readPtr was not sitting exactly on
+    // a START byte (e.g. after a dropped/partial UART byte). readPtr then never
+    // advanced, the parser stalled permanently and the display stayed frozen until the
+    // app was restarted. We now skip any garbage and re-align readPtr to the next
+    // START byte (bounded by writePtr), so a single glitch can't wedge the stream.
+    size_t qsize = queue->queueSize;
+    size_t readIdx = (size_t)(queue->readPtr - queue->messageQueue);
+    size_t writeIdx = (size_t)(queue->writePtr - queue->messageQueue);
+
+    // Nothing buffered
+    if(readIdx == writeIdx) {
         return false;
     }
 
-    // Now keep looking forward through the queue until we hit a 0 or the end byte
-    bool alreadyWrapped = false;
-    for (uint8_t* cursor = queue->readPtr; ; cursor++) {
-        // Let's check if we should wrap around
-        if (cursor >= queue->messageQueue + queue->queueSize) {
-            if (alreadyWrapped) {
-                return false;
-            }
-            cursor = queue->messageQueue;
-            alreadyWrapped = true;
-        }
+    // Skip forward to the next START byte (drop desync garbage)
+    while(readIdx != writeIdx && queue->messageQueue[readIdx] != PWNAGOTCHI_PROTOCOL_START) {
+        readIdx = (readIdx + 1) % qsize;
+    }
+    queue->readPtr = queue->messageQueue + readIdx;
 
-        // Otherwise see if we're at an end byte
-        if (*cursor == PWNAGOTCHI_PROTOCOL_END) {
+    if(readIdx == writeIdx) {
+        // No START available yet; stay put and wait for more bytes
+        return false;
+    }
+
+    // Look for the matching END, but never past the data we actually have
+    size_t cursor = readIdx;
+    while(cursor != writeIdx) {
+        uint8_t b = queue->messageQueue[cursor];
+        if(b == PWNAGOTCHI_PROTOCOL_END) {
             return true;
         }
-        else if (*cursor == 0x00) {
-            return false;
-        }
+        cursor = (cursor + 1) % qsize;
     }
+
+    // START seen but message not complete yet
+    return false;
 }
 
 void message_queue_push_byte(MessageQueue* queue, uint8_t data) {
     *(queue->writePtr) = data;
 
-    // Now increment writePtr
-    queue->writePtr += 1;
-
-    // Check to make sure we didn't exceed the size
-    if (queue->writePtr >= queue->messageQueue + queue->queueSize) {
-        // Then start writing over the front again
-        queue->writePtr = queue->messageQueue;
-    }
+    // [patched] exact ring advance (keep writePtr/readPtr aligned)
+    size_t idx = (size_t)(queue->writePtr - queue->messageQueue);
+    queue->writePtr = queue->messageQueue + ((idx + 1) % queue->queueSize);
 }
 
 void message_queue_wipe(MessageQueue* queue) {
@@ -125,17 +133,17 @@ bool message_queue_pop_message(MessageQueue* queue, PwnCommand* dest) {
     //                  STX + CODE + args + ETX
     size_t messageSize = 1 + 1 + argCount + 1;
 
-    // Let's reset that message so we don't run across it again
-    memset(queue->readPtr, 0, messageSize);
-
-    // Now increment the readPtr
-    queue->readPtr += messageSize;
-
-    // Check if we are overflowing!
-    if (queue->readPtr >= queue->messageQueue + queue->queueSize) {
-        // Then start reading back from the front
-        queue->readPtr = queue->messageQueue;
+    // [patched] wrap-safe reset — the message may straddle the end of the ring.
+    // The old code called memset(readPtr, 0, messageSize), which wrote past the
+    // buffer whenever readPtr was near the end -> heap corruption -> crash/NULL-deref
+    // after a couple of minutes (upstream issue #6 / #19).
+    size_t startIdx = (size_t)(queue->readPtr - queue->messageQueue);
+    for(size_t k = 0; k < messageSize; k++) {
+        queue->messageQueue[(startIdx + k) % queue->queueSize] = 0;
     }
+
+    // Now advance readPtr (exact ring wrap)
+    queue->readPtr = queue->messageQueue + ((startIdx + messageSize) % queue->queueSize);
 
     return true;
 }
