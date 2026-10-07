@@ -70,9 +70,11 @@ static void text_message_process(FuriString* receiver, uint8_t* arguments, const
 }
 
 static bool flipagotchi_exec_cmd(PwnDumpModel* model) {
+    bool processed = false;
     if(message_queue_has_message(model->queue)) {
         PwnCommand cmd;
         message_queue_pop_message(model->queue, &cmd);
+        processed = true;
         FURI_LOG_D("PWN", "Has message (code: %d), processing...", cmd.parameterCode);
 
         // See what the cmd wants
@@ -151,7 +153,7 @@ static bool flipagotchi_exec_cmd(PwnDumpModel* model) {
         }
     }
 
-    return false;
+    return processed;
 }
 
 static void flipagotchi_view_draw_callback(Canvas* canvas, void* _model) {
@@ -265,7 +267,7 @@ static FlipagotchiApp* flipagotchi_app_alloc() {
 
     app->worker_thread = furi_thread_alloc();
     furi_thread_set_name(app->worker_thread, "UsbUartWorker");
-    furi_thread_set_stack_size(app->worker_thread, 1024);
+    furi_thread_set_stack_size(app->worker_thread, 4096);
     furi_thread_set_context(app->worker_thread, app);
     furi_thread_set_callback(app->worker_thread, flipagotchi_worker);
     furi_thread_start(app->worker_thread);
